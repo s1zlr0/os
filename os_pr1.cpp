@@ -1,13 +1,3 @@
-/**
- * os_pr1.cpp — тестовая консольная программа для демонстрации caesar.dll / libcaesar.so.
- *
- * Запуск:
- *   os_pr1.exe <путь_к_dll> <ключ> <входной_файл> <выходной_файл>
- *
- * Пример:
- *   os_pr1.exe caesar.dll 42 input.txt encrypted.bin
- *   os_pr1.exe caesar.dll 42 encrypted.bin decrypted.txt
- */
 
 #include <iostream>
 #include <fstream>
@@ -16,7 +6,7 @@
 #include <cstdlib>
 #include <cctype>
 
-// ── Платформо-зависимый загрузчик DLL/SO --------------------------------────
+// ── Платформо-зависимый загрузчик DLL/SO
 #ifdef _WIN32
     #define WIN32_LEAN_AND_MEAN
     #include <windows.h>
@@ -58,7 +48,6 @@
         return e ? std::string(e) : "unknown error";
     }
 #endif
-// ----------------------------------------------------------------────────────
 
 // Типы указателей на функции библиотеки
 typedef void (*set_key_fn)(char);
@@ -256,4 +245,5 @@ int main(int argc, char* argv[]) {
 
     lib_close(handle);
     return EXIT_SUCCESS;
+
 }
