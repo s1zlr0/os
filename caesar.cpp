@@ -1,9 +1,4 @@
-/**
- * caesar.cpp — реализация простой криптографической библиотеки
- *
- * Алгоритм: побайтовый XOR с ключом.
- * XOR симметричен: применив caesar дважды с тем же ключом, получим исходные данные.
- */
+
 
 #include "caesar.h"
 #include <cstring>
@@ -31,4 +26,5 @@ extern "C" void caesar(void* src, void* dst, int len) {
     for (int i = 0; i < len; ++i) {
         out[i] = in[i] ^ key;
     }
+
 }
