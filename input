@@ -1,0 +1,2 @@
+Hello, World! Это тестовый файл для проверки библиотеки caesar.
+XOR симметрична: encrypt(encrypt(data, key), key) == data.
