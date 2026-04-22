@@ -1,8 +1,9 @@
 /**
- * secure_copy.cpp - Task 3
- * 3 worker threads, each picks files from shared queue until empty.
- * Single mutex protects queue, counter and log.
- * Usage: ./secure_copy file1 file2 ... output_dir/ key
+ * secure_copy.cpp - Task 4
+ * Supports --mode=sequential, --mode=parallel, auto mode (<5 files = sequential).
+ * Parallel mode uses a pool of 4 threads (not created per file).
+ * Collects timing statistics and prints comparison table in auto mode.
+ * Usage: ./secure_copy [--mode=sequential|parallel] file1 ... output_dir/ key
  */
 
 #include <iostream>
@@ -23,29 +24,34 @@
 #include "caesar.h"
 
 static const size_t BUFFER_SIZE    = 8192;
-static const int    NUM_THREADS    = 3;
 static const int    LOCK_TIMEOUT_S = 5;
 
+#ifndef WORKERS_COUNT
+#define WORKERS_COUNT 4
+#endif
+static const int MAX_THREADS = WORKERS_COUNT;
+
 static volatile int keep_running = 1;
+static void sigint_handler(int) { keep_running = 0; }
 
-static void sigint_handler(int /*sig*/) { keep_running = 0; }
+enum Mode { AUTO, SEQUENTIAL, PARALLEL };
 
-// Single mutex protects: g_file_queue, g_files_done, log writes
 static pthread_mutex_t g_mutex      = PTHREAD_MUTEX_INITIALIZER;
 static std::queue<std::string> g_file_queue;
 static int                     g_files_done = 0;
 static std::string             g_output_dir;
 
-// Flag to enable deadlock simulation
 static bool g_deadlock_test = false;
 
-// Deadlock simulation: hold mutex for 6s so other threads timeout
 static void simulate_deadlock_if_enabled() {
     if (g_deadlock_test)
         sleep(6);
 }
+struct FileStat {
+    std::string filename;
+    double      elapsed;
+};
 
-// Append one line to log.txt — called while g_mutex is held
 static void log_write(pthread_t tid, const std::string& filename,
                       const std::string& result, double elapsed)
 {
@@ -60,7 +66,6 @@ static void log_write(pthread_t tid, const std::string& filename,
     fclose(f);
 }
 
-// Try to lock mutex with 5s timeout. On timeout: print warning, return false.
 static bool timed_lock(pthread_mutex_t* mutex, int thread_num) {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
@@ -74,7 +79,6 @@ static bool timed_lock(pthread_mutex_t* mutex, int thread_num) {
     return (ret == 0);
 }
 
-// Per-file queue for producer/consumer (from Task 2, unchanged)
 struct SharedQueue {
     std::queue<std::vector<unsigned char>> queue;
     bool            done;
@@ -161,7 +165,10 @@ static void* consumer_thread(void* arg) {
     return nullptr;
 }
 
-static bool process_file(const std::string& input, const std::string& output) {
+static double process_file(const std::string& input, const std::string& output) {
+    struct timespec t_start, t_end;
+    clock_gettime(CLOCK_MONOTONIC, &t_start);
+
     SharedQueue  queue;
     ProducerArgs prod { input.c_str(),  &queue };
     ConsumerArgs cons { output.c_str(), &queue };
@@ -170,7 +177,10 @@ static bool process_file(const std::string& input, const std::string& output) {
     pthread_create(&consumer_tid, nullptr, consumer_thread, &cons);
     pthread_join(producer_tid, nullptr);
     pthread_join(consumer_tid, nullptr);
-    return keep_running;
+
+    clock_gettime(CLOCK_MONOTONIC, &t_end);
+    return (t_end.tv_sec  - t_start.tv_sec)
+         + (t_end.tv_nsec - t_start.tv_nsec) / 1e9;
 }
 
 static std::string base_name(const std::string& path) {
@@ -189,14 +199,53 @@ static long get_file_size(const char* path) {
     return (stat(path, &st) == 0) ? static_cast<long>(st.st_size) : -1;
 }
 
-struct WorkerArgs { int thread_num; };
+static void print_stats(const std::string& mode_name,
+                        const std::vector<FileStat>& stats,
+                        double total_time)
+{
+    double avg = stats.empty() ? 0.0 : total_time / stats.size();
+    std::cout << "\nStatistics [" << mode_name << "]\n"
+              << "  Files processed : " << stats.size() << "\n"
+              << "  Total time      : " << total_time << "s\n"
+              << "  Avg per file    : " << avg << "s\n";
+}
+
+static double run_sequential(const std::vector<std::string>& files,
+                             const std::string& output_dir,
+                             std::vector<FileStat>& stats)
+{
+    struct timespec t_start, t_end;
+    clock_gettime(CLOCK_MONOTONIC, &t_start);
+
+    for (const auto& f : files) {
+        if (!keep_running) break;
+        std::string out = output_dir + base_name(f);
+        std::cout << "[SEQ] Processing: " << f << "\n";
+        double elapsed = process_file(f, out);
+        stats.push_back({f, elapsed});
+        std::cout << "[SEQ] Done: " << f << " (" << elapsed << "s)\n";
+
+        pthread_mutex_lock(&g_mutex);
+        ++g_files_done;
+        log_write(pthread_self(), f, "OK", elapsed);
+        pthread_mutex_unlock(&g_mutex);
+    }
+
+    clock_gettime(CLOCK_MONOTONIC, &t_end);
+    return (t_end.tv_sec  - t_start.tv_sec)
+         + (t_end.tv_nsec - t_start.tv_nsec) / 1e9;
+}
+
+struct WorkerArgs {
+    int                   thread_num;
+    std::vector<FileStat>* stats;
+};
 
 static void* worker_thread(void* arg) {
     WorkerArgs* a   = static_cast<WorkerArgs*>(arg);
     pthread_t   tid = pthread_self();
 
     while (keep_running) {
-        // Get next file from queue
         if (!timed_lock(&g_mutex, a->thread_num)) {
             std::cerr << "[Thread " << a->thread_num
                       << "] Deadlock detected — aborting thread.\n";
@@ -209,7 +258,7 @@ static void* worker_thread(void* arg) {
         }
         std::string input_path = g_file_queue.front();
         g_file_queue.pop();
-        simulate_deadlock_if_enabled(); // hold mutex to trigger timeout in other threads
+        simulate_deadlock_if_enabled();
         pthread_mutex_unlock(&g_mutex);
 
         std::string output_path = g_output_dir + base_name(input_path);
@@ -217,16 +266,9 @@ static void* worker_thread(void* arg) {
                   << static_cast<unsigned long>(tid)
                   << "] Processing: " << input_path << "\n";
 
-        struct timespec t_start, t_end;
-        clock_gettime(CLOCK_MONOTONIC, &t_start);
-        bool ok = process_file(input_path, output_path);
-        clock_gettime(CLOCK_MONOTONIC, &t_end);
-        double elapsed = (t_end.tv_sec  - t_start.tv_sec)
-                       + (t_end.tv_nsec - t_start.tv_nsec) / 1e9;
+        double elapsed = process_file(input_path, output_path);
+        std::string result = keep_running ? "OK" : "ABORTED";
 
-        std::string result = ok ? "OK" : "ABORTED";
-
-        // Update counter and write log
         if (!timed_lock(&g_mutex, a->thread_num)) {
             std::cerr << "[Thread " << a->thread_num
                       << "] Deadlock detected — aborting thread.\n";
@@ -237,6 +279,7 @@ static void* worker_thread(void* arg) {
         int done = g_files_done;
         log_write(tid, input_path, result, elapsed);
         pthread_mutex_unlock(&g_mutex);
+        a->stats->push_back({input_path, elapsed});
 
         std::cout << "[Thread " << a->thread_num << "] Done: "
                   << input_path << " (" << elapsed << "s)"
@@ -246,24 +289,67 @@ static void* worker_thread(void* arg) {
     return nullptr;
 }
 
+static double run_parallel(const std::vector<std::string>& files,
+                           const std::string& output_dir,
+                           std::vector<FileStat>& stats)
+{
+    for (const auto& f : files)
+        g_file_queue.push(f);
+    g_output_dir  = output_dir;
+    g_files_done  = 0;
+
+    std::vector<std::vector<FileStat>> thread_stats(MAX_THREADS);
+
+    struct timespec t_start, t_end;
+    clock_gettime(CLOCK_MONOTONIC, &t_start);
+
+    pthread_t  tids[MAX_THREADS];
+    WorkerArgs wargs[MAX_THREADS];
+    for (int i = 0; i < MAX_THREADS; ++i) {
+        wargs[i].thread_num = i + 1;
+        wargs[i].stats      = &thread_stats[i];
+        pthread_create(&tids[i], nullptr, worker_thread, &wargs[i]);
+    }
+    for (int i = 0; i < MAX_THREADS; ++i)
+        pthread_join(tids[i], nullptr);
+
+    clock_gettime(CLOCK_MONOTONIC, &t_end);
+
+    for (auto& ts : thread_stats)
+        for (auto& s : ts)
+            stats.push_back(s);
+
+    return (t_end.tv_sec  - t_start.tv_sec)
+         + (t_end.tv_nsec - t_start.tv_nsec) / 1e9;
+}
+
 int main(int argc, char* argv[]) {
     if (argc < 4) {
         std::cerr << "Usage: " << argv[0]
-                  << " file1 [file2 ...] output_dir/ key\n";
+                  << " [--mode=sequential|parallel] [--deadlock-test]"
+                  << " file1 ... output_dir/ key\n";
         return EXIT_FAILURE;
     }
 
-    // Check for optional --deadlock-test flag as first argument
-    int arg_offset = 0;
-    if (argc >= 2 && std::string(argv[1]) == "--deadlock-test") {
-        g_deadlock_test = true;
-        arg_offset = 1;
-        std::cout << "[INFO] Deadlock simulation enabled\n";
+    int  arg_offset = 0;
+    Mode mode       = AUTO;
+
+    for (int i = 1; i < argc; ++i) {
+        std::string a = argv[i];
+        if (a == "--mode=sequential") { mode = SEQUENTIAL; ++arg_offset; }
+        else if (a == "--mode=parallel")   { mode = PARALLEL;   ++arg_offset; }
+        else if (a == "--deadlock-test")   { g_deadlock_test = true; ++arg_offset; }
+        else break;
     }
 
     int         key        = atoi(argv[argc - 1]) & 0xFF;
     std::string output_dir = argv[argc - 2];
     int         num_files  = argc - 3 - arg_offset;
+
+    if (num_files <= 0) {
+        std::cerr << "[ERROR] No input files specified.\n";
+        return EXIT_FAILURE;
+    }
 
     if (output_dir.back() != '/') output_dir += '/';
 
@@ -272,18 +358,21 @@ int main(int argc, char* argv[]) {
         return EXIT_FAILURE;
     }
 
+    std::vector<std::string> files;
     for (int i = 1 + arg_offset; i <= num_files + arg_offset; ++i) {
         if (get_file_size(argv[i]) < 0) {
             std::cerr << "[ERROR] File not found: " << argv[i] << "\n";
             return EXIT_FAILURE;
         }
-        g_file_queue.push(argv[i]);
+        files.push_back(argv[i]);
     }
 
-    g_output_dir = output_dir;
+    if (mode == AUTO)
+        mode = (num_files < 5) ? SEQUENTIAL : PARALLEL;
 
+    std::string mode_name = (mode == SEQUENTIAL) ? "sequential" : "parallel";
     std::cout << "[INFO] Files   : " << num_files << "\n"
-              << "[INFO] Threads : " << NUM_THREADS << "\n"
+              << "[INFO] Mode    : " << mode_name << "\n"
               << "[INFO] Output  : " << output_dir << "\n"
               << "[INFO] Key     : " << key << "\n"
               << "[INFO] Press Ctrl+C to cancel\n\n";
@@ -295,23 +384,64 @@ int main(int argc, char* argv[]) {
     sa.sa_handler = sigint_handler;
     sigaction(SIGINT, &sa, nullptr);
 
-    pthread_t  tids[NUM_THREADS];
-    WorkerArgs wargs[NUM_THREADS];
-    for (int i = 0; i < NUM_THREADS; ++i) {
-        wargs[i].thread_num = i + 1;
-        pthread_create(&tids[i], nullptr, worker_thread, &wargs[i]);
+    std::vector<FileStat> stats;
+    double total_time = 0.0;
+
+    if (mode == SEQUENTIAL) {
+        total_time = run_sequential(files, output_dir, stats);
+    } else {
+        total_time = run_parallel(files, output_dir, stats);
     }
-    for (int i = 0; i < NUM_THREADS; ++i)
-        pthread_join(tids[i], nullptr);
 
     if (!keep_running) {
         std::cout << "\nОперация прервана пользователем\n";
         return EXIT_FAILURE;
     }
 
-    std::cout << "\n[OK] All done. Files processed: "
-              << g_files_done << "/" << num_files << "\n";
-    std::cout << "[INFO] Log written to: log.txt\n";
+    print_stats(mode_name, stats, total_time);
+
+    if (argc > 1) {
+        bool was_auto = true;
+        for (int i = 1; i < argc; ++i) {
+            std::string a = argv[i];
+            if (a == "--mode=sequential" || a == "--mode=parallel") {
+                was_auto = false; break;
+            }
+        }
+
+        if (was_auto) {
+            std::cout << "\nRunning alternative mode for comparison\n";
+            Mode alt_mode = (mode == SEQUENTIAL) ? PARALLEL : SEQUENTIAL;
+            std::string alt_name = (alt_mode == SEQUENTIAL) ? "sequential" : "parallel";
+
+            g_files_done = 0;
+            keep_running = 1;
+            while (!g_file_queue.empty()) g_file_queue.pop();
+
+            std::string alt_output = output_dir + "alt/";
+            ensure_dir(alt_output);
+
+            std::vector<FileStat> alt_stats;
+            double alt_time = 0.0;
+
+            if (alt_mode == SEQUENTIAL)
+                alt_time = run_sequential(files, alt_output, alt_stats);
+            else
+                alt_time = run_parallel(files, alt_output, alt_stats);
+
+            print_stats(alt_name, alt_stats, alt_time);
+
+            std::cout << "\nComparison\n"
+                      << "  " << mode_name << " : " << total_time << "s\n"
+                      << "  " << alt_name  << " : " << alt_time   << "s\n"
+                      << "  Faster: "
+                      << (total_time <= alt_time ? mode_name : alt_name)
+                      << " by " << std::abs(total_time - alt_time) << "s\n";
+        }
+    }
+
+    std::cout << "\n[OK] All done.\n"
+              << "[INFO] Log written to: log.txt\n";
 
     return EXIT_SUCCESS;
 }

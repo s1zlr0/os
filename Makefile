@@ -8,8 +8,9 @@ LIB_NAME := libcaesar.so
 TEST_SRC  := os_pr1.cpp
 TEST_BIN  := os_pr1
 
-COPY_SRC  := secure_copy.cpp
-COPY_BIN  := secure_copy
+COPY_SRC     := secure_copy.cpp
+COPY_BIN     := secure_copy
+WORKERS_COUNT := 4
 
 STAGE1_BIN := secure_copy_stage1
 STAGE2_BIN := secure_copy_stage2
@@ -39,7 +40,7 @@ $(TEST_BIN): $(TEST_SRC) caesar.h
 	@echo "[OK] $(TEST_BIN) built."
 
 $(COPY_BIN): $(COPY_SRC) caesar.h $(LIB_NAME)
-	$(CXX) $(CXXFLAGS) -o $@ $< -L. -lcaesar -pthread -Wl,-rpath,.
+	$(CXX) $(CXXFLAGS) -DWORKERS_COUNT=$(WORKERS_COUNT) -o $@ $< -L. -lcaesar -pthread -Wl,-rpath,.
 	@echo "[OK] $(COPY_BIN) built."
 
 $(STAGE1_BIN): secure_copy_stage1.cpp caesar.h $(LIB_NAME)
@@ -109,6 +110,20 @@ test3: $(COPY_BIN)
 	done
 	@cat log.txt
 
+.PHONY: test4
+test4: $(COPY_BIN)
+	@for i in $(shell seq 1 10); do dd if=/dev/urandom of=t4_f$$i.bin bs=1024 count=512 2>/dev/null; done
+	@echo "Auto mode (10 files, should pick parallel)"
+	./$(COPY_BIN) t4_f1.bin t4_f2.bin t4_f3.bin t4_f4.bin t4_f5.bin t4_f6.bin t4_f7.bin t4_f8.bin t4_f9.bin t4_f10.bin out4/ $(TEST_KEY)
+	@echo ""
+	@echo "Sequential mode"
+	./$(COPY_BIN) --mode=sequential t4_f1.bin t4_f2.bin t4_f3.bin t4_f4.bin t4_f5.bin out4_seq/ $(TEST_KEY)
+	@echo ""
+	@echo "Parallel mode"
+	./$(COPY_BIN) --mode=parallel t4_f1.bin t4_f2.bin t4_f3.bin t4_f4.bin t4_f5.bin out4_par/ $(TEST_KEY)
+	@rm -f t4_f*.bin
+	@rm -rf out4/ out4_seq/ out4_par/
+
 .PHONY: clean
 clean:
 	rm -f $(LIB_OBJ) $(LIB_NAME) $(TEST_BIN) $(COPY_BIN) \
@@ -116,6 +131,6 @@ clean:
 	      $(STAGE4_BIN) $(STAGE5_BIN) \
 	      $(ENCRYPTED_FILE) $(DECRYPTED_FILE) \
 	      big_input.bin big_encrypted.bin big_decrypted.bin \
-	      test_f*.txt log.txt
-	@rm -rf out3/ restored3/
+	      test_f*.txt log.txt t4_f*.bin
+	@rm -rf out3/ restored3/ out4/ out4_seq/ out4_par/
 	@echo "[OK] Cleaned."
