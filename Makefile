@@ -26,7 +26,7 @@ DECRYPTED_FILE := decrypted.txt
 TEST_KEY       := 42
 
 .PHONY: all
-all: $(LIB_NAME) $(TEST_BIN) $(COPY_BIN) $(STAGE1_BIN) $(STAGE2_BIN) $(STAGE3_BIN) $(STAGE4_BIN) $(STAGE5_BIN)
+all: $(LIB_NAME) $(TEST_BIN) $(COPY_BIN)
 
 $(LIB_NAME): $(LIB_OBJ)
 	$(CXX) -shared -o $@ $^
@@ -134,3 +134,58 @@ clean:
 	      test_f*.txt log.txt t4_f*.bin
 	@rm -rf out3/ restored3/ out4/ out4_seq/ out4_par/
 	@echo "[OK] Cleaned."
+.PHONY: test5
+test5: $(LIB_NAME) $(TEST_BIN) $(COPY_BIN) test5_segv
+	@echo "Task 5: Memory Protection Tests"
+	@echo ""
+	@echo "--- [1/4] Encrypt/decrypt with mmap-protected key ---"
+	@if [ ! -f $(INPUT_FILE) ]; then \
+		echo "Test data for task 5." > $(INPUT_FILE); \
+	fi
+	./$(TEST_BIN) ./$(LIB_NAME) $(TEST_KEY) $(INPUT_FILE) $(ENCRYPTED_FILE)
+	./$(TEST_BIN) ./$(LIB_NAME) $(TEST_KEY) $(ENCRYPTED_FILE) $(DECRYPTED_FILE)
+	@if diff -q $(INPUT_FILE) $(DECRYPTED_FILE) > /dev/null 2>&1; then \
+		echo "[PASS] Encrypt/decrypt OK"; \
+	else \
+		echo "[FAIL] Files differ!"; exit 1; \
+	fi
+	@echo ""
+	@echo "--- [2/4] secure_copy with protected key (sequential) ---"
+	@echo "file_a" > t5_a.txt && echo "file_b" > t5_b.txt && echo "file_c" > t5_c.txt
+	./$(COPY_BIN) --mode=sequential t5_a.txt t5_b.txt t5_c.txt out5/ $(TEST_KEY)
+	./$(COPY_BIN) --mode=sequential out5/t5_a.txt out5/t5_b.txt out5/t5_c.txt out5_dec/ $(TEST_KEY)
+	@for f in t5_a.txt t5_b.txt t5_c.txt; do \
+		if diff -q $$f out5_dec/$$f > /dev/null 2>&1; then \
+			echo "[PASS] $$f"; \
+		else \
+			echo "[FAIL] $$f"; exit 1; \
+		fi; \
+	done
+	@echo ""
+	@echo "--- [3/4] SIGSEGV on write to protected key memory ---"
+	@echo "Writing to PROT_READ page (handler must print SECURITY ERROR and exit 1):"
+	./test5_segv; \
+	CODE=$$?; \
+	if [ $$CODE -eq 1 ]; then \
+		echo "[PASS] Exited with code 1"; \
+	else \
+		echo "[FAIL] Expected exit 1, got $$CODE"; exit 1; \
+	fi
+	@echo ""
+	@echo "--- [4/4] key not exported from .so (cannot modify directly) ---"
+	@if nm -D $(LIB_NAME) | grep -q "g_key_mem"; then \
+		echo "[FAIL] g_key_mem is exported!"; exit 1; \
+	else \
+		echo "[PASS] g_key_mem is not exported — key cannot be modified directly"; \
+	fi
+	@echo ""
+	@echo "[OK] All Task 5 tests passed"
+	@rm -f t5_a.txt t5_b.txt t5_c.txt
+	@rm -rf out5/ out5_dec/
+
+test5_segv: test5_segv.cpp caesar.cpp caesar.h
+	$(CXX) $(CXXFLAGS) -DTEST5_EXPOSE_KEY_ADDR -o $@ test5_segv.cpp caesar.cpp -ldl
+	@echo "[OK] test5_segv built."
+
+test5_segv.cpp:
+	@printf '#include "caesar.h"\n#include <cstdio>\nint main(){\n    set_key(42);\n    char* p=(char*)get_key_mem_addr();\n    printf("Attempting write to protected key memory at %%p...\\n",(void*)p); fflush(stdout);\n    *p=1;\n    printf("ERROR: should not reach here\\n"); return 0;\n}\n' > $@

@@ -24,6 +24,11 @@ void set_key(char key);
  */
 void caesar(void* src, void* dst, int len);
 
+#ifdef TEST5_EXPOSE_KEY_ADDR
+// Только для тестирования задания 5: возвращает адрес защищённой области ключа
+void* get_key_mem_addr(void);
+#endif
+
 #ifdef __cplusplus
 }
 #endif
