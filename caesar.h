@@ -6,26 +6,27 @@ extern "C" {
 #endif
 
 /**
- * @brief Устанавливает ключ шифрования XOR.
- * Ключ сохраняется внутри библиотеки в статической переменной.
+ * @brief Инициализирует RC4-состояние из мастер-ключа и соли.
+ * Состояние (256 байт) хранится в защищённой mmap-памяти.
  *
- * @param key Символ-ключ для операции XOR
+ * @param master     Мастер-ключ (строка)
+ * @param master_len Длина мастер-ключа
+ * @param salt       Соль (16 байт)
  */
-void set_key(char key);
+void set_key(const unsigned char* master, int master_len,
+             const unsigned char* salt);
 
 /**
- * @brief Шифрует/дешифрует данные побайтовым XOR с установленным ключом.
- * Поскольку XOR симметрична: caesar(caesar(data)) == data.
- * Поддерживает in-place шифрование (src == dst).
+ * @brief Шифрует/дешифрует данные RC4 с текущим состоянием.
+ * RC4 симметричен: применив дважды с одним состоянием → оригинал.
  *
- * @param src   Указатель на входной буфер (исходные данные)
- * @param dst   Указатель на выходной буфер (результат)
- * @param len   Количество байт для обработки
+ * @param src  Входной буфер
+ * @param dst  Выходной буфер
+ * @param len  Количество байт
  */
-void caesar(void* src, void* dst, int len);
+void cipher(void* src, void* dst, int len);
 
 #ifdef TEST5_EXPOSE_KEY_ADDR
-// Только для тестирования задания 5: возвращает адрес защищённой области ключа
 void* get_key_mem_addr(void);
 #endif
 

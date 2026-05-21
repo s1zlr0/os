@@ -1,10 +1,8 @@
-
 #include <iostream>
 #include <fstream>
 #include <vector>
 #include <string>
 #include <cstdlib>
-#include <cctype>
 
 // ── Платформо-зависимый загрузчик DLL/SO
 #ifdef _WIN32
@@ -50,8 +48,8 @@
 #endif
 
 // Типы указателей на функции библиотеки
-typedef void (*set_key_fn)(char);
-typedef void (*caesar_fn)(void*, void*, int);
+typedef void (*set_key_fn)(const unsigned char*, int, const unsigned char*);
+typedef void (*cipher_fn)(void*, void*, int);
 
 // Читает файл целиком в вектор байт
 static bool read_file(const std::string& path, std::vector<unsigned char>& data) {
@@ -160,19 +158,8 @@ int main(int argc, char* argv[]) {
     const std::string in_path  = argv[3];
     const std::string out_path = argv[4];
 
-    // Парсим ключ: одиночный не-цифровой символ → берём ASCII-код,
-    // иначе парсим как целое число
-    char key = 0;
-    if (key_arg.size() == 1 && !std::isdigit(static_cast<unsigned char>(key_arg[0]))) {
-        key = key_arg[0];
-    } else {
-        key = static_cast<char>(std::atoi(key_arg.c_str()) & 0xFF);
-    }
-
     std::cout << "[INFO] Библиотека : " << lib_path << "\n"
-              << "[INFO] Ключ       : " << static_cast<int>(static_cast<unsigned char>(key))
-              << " (0x" << std::hex << static_cast<int>(static_cast<unsigned char>(key))
-              << std::dec << ")\n"
+              << "[INFO] Ключ       : " << key_arg  << "\n"
               << "[INFO] Вход       : " << in_path  << "\n"
               << "[INFO] Выход      : " << out_path << "\n";
 
@@ -191,9 +178,9 @@ int main(int argc, char* argv[]) {
         return EXIT_FAILURE;
     }
 
-    caesar_fn fn_caesar = reinterpret_cast<caesar_fn>(lib_sym(handle, "caesar"));
-    if (!fn_caesar) {
-        std::cerr << "[ERROR] Не найдена функция caesar: " << lib_error() << "\n";
+    cipher_fn fn_cipher = reinterpret_cast<cipher_fn>(lib_sym(handle, "cipher"));
+    if (!fn_cipher) {
+        std::cerr << "[ERROR] Не найдена функция cipher: " << lib_error() << "\n";
         lib_close(handle);
         return EXIT_FAILURE;
     }
@@ -227,8 +214,10 @@ int main(int argc, char* argv[]) {
     print_content("ВХОДНОЙ ФАЙЛ: " + in_path, data, input_is_binary);
 
     // ── Шифрование / дешифрование (in-place)
-    fn_set_key(key);
-    fn_caesar(data.data(), data.data(), static_cast<int>(data.size()));
+    unsigned char zero_salt[16] = {};
+    fn_set_key(reinterpret_cast<const unsigned char*>(key_arg.c_str()),
+               static_cast<int>(key_arg.size()), zero_salt);
+    fn_cipher(data.data(), data.data(), static_cast<int>(data.size()));
 
     // Показываем содержимое выходного файла (всегда бинарно после шифрования,
     // но если ключ=0 или это дешифрование — может быть текстом)

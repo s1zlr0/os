@@ -1,10 +1,8 @@
 /**
- * caesar.cpp — реализация простой криптографической библиотеки
+ * caesar.cpp — RC4 поточный шифр с защищённым состоянием.
  *
- * Алгоритм: побайтовый XOR с ключом.
- * XOR симметричен: применив caesar дважды с тем же ключом, получим исходные данные.
- *
- * Task 5: ключ хранится в защищённой области памяти (mmap + mprotect).
+ * Task 5: состояние RC4 (256 байт) хранится в защищённой mmap-памяти.
+ * Task 6: ключ = мастер-ключ || соль, для каждого файла своя соль.
  */
 
 #include "caesar.h"
@@ -13,28 +11,32 @@
 #include <csignal>
 #include <iostream>
 #include <sys/mman.h>
+#include <unistd.h>
 
-static const size_t KEY_MEM_SIZE = 16;
+// RC4-состояние: 256 байт S-box + 2 байта счётчиков i, j
+static const size_t RC4_STATE_SIZE = 256 + 2;
 
-// Указатель на защищённую область памяти для ключа
+// Указатель на защищённую область памяти для RC4-состояния
 static unsigned char* g_key_mem = nullptr;
 
-// Обработчик SIGSEGV: различает попытку записи в защищённую область ключа
-// и обычные ошибки доступа (nullptr, освобождённая память и т.п.)
+// Удобный доступ к частям состояния
+static inline unsigned char* rc4_s()  { return g_key_mem; }        // S-box [0..255]
+static inline unsigned char& rc4_i()  { return g_key_mem[256]; }   // счётчик i
+static inline unsigned char& rc4_j()  { return g_key_mem[257]; }   // счётчик j
+
+// ── Обработчик SIGSEGV ──────────────────────────────────────────────────────
+
 static void sigsegv_handler(int sig, siginfo_t* info, void* ctx) {
     (void)sig; (void)ctx;
     void* fault_addr = info ? info->si_addr : nullptr;
-    // Проверяем: адрес попадает в защищённую область ключа?
     if (g_key_mem != nullptr
         && fault_addr >= static_cast<void*>(g_key_mem)
-        && fault_addr <  static_cast<void*>(g_key_mem + KEY_MEM_SIZE))
+        && fault_addr <  static_cast<void*>(g_key_mem + RC4_STATE_SIZE))
     {
         const char msg[] = "[SECURITY ERROR] Попытка записи в защищённую область памяти!\n";
         write(2, msg, sizeof(msg) - 1);
         _exit(EXIT_FAILURE);
     }
-    // Обычный SIGSEGV (nullptr, freed memory и т.п.) — восстанавливаем
-    // стандартное поведение и повторно генерируем сигнал
     struct sigaction sa_dfl;
     memset(&sa_dfl, 0, sizeof(sa_dfl));
     sa_dfl.sa_handler = SIG_DFL;
@@ -42,19 +44,18 @@ static void sigsegv_handler(int sig, siginfo_t* info, void* ctx) {
     raise(SIGSEGV);
 }
 
-// Инициализирует защищённую память и устанавливает обработчик SIGSEGV
+// ── Управление защищённой памятью ───────────────────────────────────────────
+
 static void key_mem_init() {
     if (g_key_mem != nullptr) return;
 
-    // Устанавливаем обработчик SIGSEGV с SA_SIGINFO для получения адреса
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_sigaction = sigsegv_handler;
     sa.sa_flags = SA_SIGINFO;
     sigaction(SIGSEGV, &sa, nullptr);
 
-    // 1. Выделяем память (mprotect #1: PROT_READ | PROT_WRITE)
-    void* ptr = mmap(nullptr, KEY_MEM_SIZE,
+    void* ptr = mmap(nullptr, RC4_STATE_SIZE,
                      PROT_READ | PROT_WRITE,
                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (ptr == MAP_FAILED) {
@@ -62,67 +63,103 @@ static void key_mem_init() {
         exit(EXIT_FAILURE);
     }
     g_key_mem = static_cast<unsigned char*>(ptr);
+    memset(g_key_mem, 0, RC4_STATE_SIZE);
 
-    // Инициализируем нулём
-    memset(g_key_mem, 0, KEY_MEM_SIZE);
-
-    // 2. Устанавливаем права только на чтение (mprotect #2: PROT_READ)
-    if (mprotect(g_key_mem, KEY_MEM_SIZE, PROT_READ) != 0) {
+    if (mprotect(g_key_mem, RC4_STATE_SIZE, PROT_READ) != 0) {
         std::cerr << "[ERROR] mprotect(PROT_READ) failed\n";
-        munmap(g_key_mem, KEY_MEM_SIZE);
+        munmap(g_key_mem, RC4_STATE_SIZE);
         exit(EXIT_FAILURE);
     }
 }
 
-// Освобождает защищённую память с затиранием ключа
 static void key_mem_destroy() {
     if (g_key_mem == nullptr) return;
-
-    // Открываем запись для затирания
-    mprotect(g_key_mem, KEY_MEM_SIZE, PROT_READ | PROT_WRITE);
-    memset(g_key_mem, 0, KEY_MEM_SIZE);
-    // Возвращаем защиту перед munmap
-    mprotect(g_key_mem, KEY_MEM_SIZE, PROT_READ);
-    munmap(g_key_mem, KEY_MEM_SIZE);
+    mprotect(g_key_mem, RC4_STATE_SIZE, PROT_READ | PROT_WRITE);
+    memset(g_key_mem, 0, RC4_STATE_SIZE);
+    mprotect(g_key_mem, RC4_STATE_SIZE, PROT_READ);
+    munmap(g_key_mem, RC4_STATE_SIZE);
     g_key_mem = nullptr;
 }
 
-// Автоматическая очистка при завершении программы
 static struct KeyMemGuard {
     KeyMemGuard()  { key_mem_init(); }
     ~KeyMemGuard() { key_mem_destroy(); }
 } g_key_guard;
 
-// Устанавливает ключ шифрования в защищённой памяти
-extern "C" void set_key(char key) {
-    // 3. Открываем запись (mprotect #3: PROT_READ | PROT_WRITE)
-    if (mprotect(g_key_mem, KEY_MEM_SIZE, PROT_READ | PROT_WRITE) != 0) {
-        std::cerr << "[ERROR] mprotect(PROT_READ|PROT_WRITE) failed\n";
-        exit(EXIT_FAILURE);
+// ── RC4 KSA (Key Scheduling Algorithm) ─────────────────────────────────────
+// Инициализирует S-box по ключу = master || salt
+
+static void rc4_ksa(const unsigned char* key, int key_len) {
+    // Открываем запись в защищённую память
+    mprotect(g_key_mem, RC4_STATE_SIZE, PROT_READ | PROT_WRITE);
+
+    unsigned char* S = rc4_s();
+    // Инициализация S-box
+    for (int k = 0; k < 256; ++k) S[k] = (unsigned char)k;
+
+    // Перемешивание по ключу
+    unsigned char j = 0;
+    for (int k = 0; k < 256; ++k) {
+        j = j + S[k] + key[k % key_len];
+        unsigned char tmp = S[k]; S[k] = S[j]; S[j] = tmp;
     }
-    memcpy(g_key_mem, &key, 1);
-    // Возвращаем защиту только на чтение
-    if (mprotect(g_key_mem, KEY_MEM_SIZE, PROT_READ) != 0) {
-        std::cerr << "[ERROR] mprotect(PROT_READ) failed\n";
-        exit(EXIT_FAILURE);
-    }
+    // Сбрасываем счётчики PRGA
+    rc4_i() = 0;
+    rc4_j() = 0;
+
+    // Закрываем запись
+    mprotect(g_key_mem, RC4_STATE_SIZE, PROT_READ);
 }
 
-extern "C" void caesar(void* src, void* dst, int len) {
-    if (!src || !dst || len <= 0) {
-        return;
-    }
+// ── Публичный интерфейс ─────────────────────────────────────────────────────
+
+// Инициализирует RC4-состояние: ключ = master || salt (всего до 256 байт)
+extern "C" void set_key(const unsigned char* master, int master_len,
+                        const unsigned char* salt) {
+    // Составляем объединённый ключ: master || salt
+    unsigned char combined[256];
+    int salt_len = 16;
+    int total = master_len + salt_len;
+    if (total > 256) total = 256;
+
+    memcpy(combined, master, master_len < 256 ? master_len : 256);
+    if (master_len < 256)
+        memcpy(combined + master_len, salt,
+               (salt_len < 256 - master_len) ? salt_len : 256 - master_len);
+
+    rc4_ksa(combined, total);
+    // Затираем временный буфер
+    memset(combined, 0, sizeof(combined));
+}
+
+// Шифрует/дешифрует данные RC4 PRGA
+extern "C" void cipher(void* src, void* dst, int len) {
+    if (!src || !dst || len <= 0) return;
 
     const unsigned char* in  = static_cast<const unsigned char*>(src);
     unsigned char*       out = static_cast<unsigned char*>(dst);
 
-    // Временно расширяем права, используем ключ напрямую из защищённой памяти,
-    // сразу возвращаем защиту
-    mprotect(g_key_mem, KEY_MEM_SIZE, PROT_READ | PROT_WRITE);
-    for (int i = 0; i < len; ++i) {
-        out[i] = in[i] ^ g_key_mem[0];
+    // Открываем запись для изменения состояния RC4
+    mprotect(g_key_mem, RC4_STATE_SIZE, PROT_READ | PROT_WRITE);
+
+    unsigned char* S = rc4_s();
+    unsigned char  i = rc4_i();
+    unsigned char  j = rc4_j();
+
+    for (int k = 0; k < len; ++k) {
+        ++i;
+        j += S[i];
+        unsigned char tmp = S[i]; S[i] = S[j]; S[j] = tmp;
+        unsigned char keystream = S[(unsigned char)(S[i] + S[j])];
+        out[k] = in[k] ^ keystream;
     }
-    mprotect(g_key_mem, KEY_MEM_SIZE, PROT_READ);
+
+    // Сохраняем обновлённые счётчики
+    rc4_i() = i;
+    rc4_j() = j;
+
+    // Закрываем запись
+    mprotect(g_key_mem, RC4_STATE_SIZE, PROT_READ);
 }
 
 #ifdef TEST5_EXPOSE_KEY_ADDR

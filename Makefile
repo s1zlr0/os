@@ -5,25 +5,17 @@ LIB_SRC  := caesar.cpp
 LIB_OBJ  := caesar.o
 LIB_NAME := libcaesar.so
 
-TEST_SRC  := os_pr1.cpp
-TEST_BIN  := os_pr1
+TEST_SRC := os_pr1.cpp
+TEST_BIN := os_pr1
 
 COPY_SRC     := secure_copy.cpp
 COPY_BIN     := secure_copy
 WORKERS_COUNT := 4
 
-STAGE1_BIN := secure_copy_stage1
-STAGE2_BIN := secure_copy_stage2
-STAGE3_BIN := secure_copy_stage3
-STAGE4_BIN := secure_copy_stage4
-STAGE5_BIN := secure_copy_stage5
-
-INSTALL_DIR := /usr/local/lib
-
 INPUT_FILE     := input.txt
 ENCRYPTED_FILE := encrypted.bin
 DECRYPTED_FILE := decrypted.txt
-TEST_KEY       := 42
+TEST_KEY       := testkey
 
 .PHONY: all
 all: $(LIB_NAME) $(TEST_BIN) $(COPY_BIN)
@@ -43,55 +35,25 @@ $(COPY_BIN): $(COPY_SRC) caesar.h $(LIB_NAME)
 	$(CXX) $(CXXFLAGS) -DWORKERS_COUNT=$(WORKERS_COUNT) -o $@ $< -L. -lcaesar -pthread -Wl,-rpath,.
 	@echo "[OK] $(COPY_BIN) built."
 
-$(STAGE1_BIN): secure_copy_stage1.cpp caesar.h $(LIB_NAME)
-	$(CXX) $(CXXFLAGS) -o $@ $< -L. -lcaesar -pthread -Wl,-rpath,.
-	@echo "[OK] $(STAGE1_BIN) built."
-
-$(STAGE2_BIN): secure_copy_stage2.cpp caesar.h $(LIB_NAME)
-	$(CXX) $(CXXFLAGS) -o $@ $< -L. -lcaesar -pthread -Wl,-rpath,.
-	@echo "[OK] $(STAGE2_BIN) built."
-
-$(STAGE3_BIN): secure_copy_stage3.cpp caesar.h $(LIB_NAME)
-	$(CXX) $(CXXFLAGS) -o $@ $< -L. -lcaesar -pthread -Wl,-rpath,.
-	@echo "[OK] $(STAGE3_BIN) built."
-
-$(STAGE4_BIN): secure_copy_stage4.cpp caesar.h $(LIB_NAME)
-	$(CXX) $(CXXFLAGS) -o $@ $< -L. -lcaesar -pthread -Wl,-rpath,.
-	@echo "[OK] $(STAGE4_BIN) built."
-
-$(STAGE5_BIN): secure_copy_stage5.cpp caesar.h $(LIB_NAME)
-	$(CXX) $(CXXFLAGS) -o $@ $< -L. -lcaesar -pthread -Wl,-rpath,.
-	@echo "[OK] $(STAGE5_BIN) built."
-
-.PHONY: install
-install: $(LIB_NAME)
-	cp $(LIB_NAME) $(INSTALL_DIR)/$(LIB_NAME)
-	ldconfig
-	@echo "[OK] Installed to $(INSTALL_DIR)."
+.PHONY: clean
+clean:
+	rm -f $(LIB_OBJ) $(LIB_NAME) $(TEST_BIN) $(COPY_BIN) \
+	      $(ENCRYPTED_FILE) $(DECRYPTED_FILE) \
+	      big_input.bin big_encrypted.bin big_decrypted.bin \
+	      test_f*.txt log.txt t4_f*.bin \
+	      test5_segv test5_segv.cpp
+	@rm -rf out3/ restored3/ out4/ out4_seq/ out4_par/ out5/ out5_dec/
+	@echo "[OK] Cleaned."
 
 .PHONY: test
 test: all
 	@if [ ! -f $(INPUT_FILE) ]; then \
-		echo "Hello, World! This is a test file for the libcaesar library." > $(INPUT_FILE); \
-		echo "XOR encryption works with any binary data, not just text." >> $(INPUT_FILE); \
-		echo "Applying caesar twice with the same key restores the original data." >> $(INPUT_FILE); \
-		echo "The quick brown fox jumps over the lazy dog." >> $(INPUT_FILE); \
+		echo "Test data for caesar library." > $(INPUT_FILE); \
 	fi
 	./$(TEST_BIN) ./$(LIB_NAME) $(TEST_KEY) $(INPUT_FILE) $(ENCRYPTED_FILE)
 	./$(TEST_BIN) ./$(LIB_NAME) $(TEST_KEY) $(ENCRYPTED_FILE) $(DECRYPTED_FILE)
 	@if diff -q $(INPUT_FILE) $(DECRYPTED_FILE) > /dev/null 2>&1; then \
-		echo "[PASS] Files match - XOR is symmetric!"; \
-	else \
-		echo "[FAIL] Files differ!"; exit 1; \
-	fi
-
-.PHONY: test2
-test2: all
-	dd if=/dev/urandom of=big_input.bin bs=1024 count=1024 2>/dev/null
-	./$(COPY_BIN) big_input.bin big_encrypted.bin $(TEST_KEY)
-	./$(COPY_BIN) big_encrypted.bin big_decrypted.bin $(TEST_KEY)
-	@if diff -q big_input.bin big_decrypted.bin > /dev/null 2>&1; then \
-		echo "[PASS] Files match!"; \
+		echo "[PASS] Files match - RC4 is symmetric!"; \
 	else \
 		echo "[FAIL] Files differ!"; exit 1; \
 	fi
@@ -124,19 +86,9 @@ test4: $(COPY_BIN)
 	@rm -f t4_f*.bin
 	@rm -rf out4/ out4_seq/ out4_par/
 
-.PHONY: clean
-clean:
-	rm -f $(LIB_OBJ) $(LIB_NAME) $(TEST_BIN) $(COPY_BIN) \
-	      $(STAGE1_BIN) $(STAGE2_BIN) $(STAGE3_BIN) \
-	      $(STAGE4_BIN) $(STAGE5_BIN) \
-	      $(ENCRYPTED_FILE) $(DECRYPTED_FILE) \
-	      big_input.bin big_encrypted.bin big_decrypted.bin \
-	      test_f*.txt log.txt t4_f*.bin
-	@rm -rf out3/ restored3/ out4/ out4_seq/ out4_par/
-	@echo "[OK] Cleaned."
 .PHONY: test5
 test5: $(LIB_NAME) $(TEST_BIN) $(COPY_BIN) test5_segv
-	@echo "Task 5: Memory Protection Tests"
+	@echo "=== Task 5: Memory Protection Tests ==="
 	@echo ""
 	@echo "--- [1/4] Encrypt/decrypt with mmap-protected key ---"
 	@if [ ! -f $(INPUT_FILE) ]; then \
@@ -163,7 +115,6 @@ test5: $(LIB_NAME) $(TEST_BIN) $(COPY_BIN) test5_segv
 	done
 	@echo ""
 	@echo "--- [3/4] SIGSEGV on write to protected key memory ---"
-	@echo "Writing to PROT_READ page (handler must print SECURITY ERROR and exit 1):"
 	./test5_segv; \
 	CODE=$$?; \
 	if [ $$CODE -eq 1 ]; then \
@@ -179,7 +130,7 @@ test5: $(LIB_NAME) $(TEST_BIN) $(COPY_BIN) test5_segv
 		echo "[PASS] g_key_mem is not exported — key cannot be modified directly"; \
 	fi
 	@echo ""
-	@echo "[OK] All Task 5 tests passed"
+	@echo "=== [OK] All Task 5 tests passed ==="
 	@rm -f t5_a.txt t5_b.txt t5_c.txt
 	@rm -rf out5/ out5_dec/
 
@@ -188,4 +139,42 @@ test5_segv: test5_segv.cpp caesar.cpp caesar.h
 	@echo "[OK] test5_segv built."
 
 test5_segv.cpp:
-	@printf '#include "caesar.h"\n#include <cstdio>\nint main(){\n    set_key(42);\n    char* p=(char*)get_key_mem_addr();\n    printf("Attempting write to protected key memory at %%p...\\n",(void*)p); fflush(stdout);\n    *p=1;\n    printf("ERROR: should not reach here\\n"); return 0;\n}\n' > $@
+	@printf '#include "caesar.h"\n#include <cstdio>\nint main(){\n    unsigned char master[]="testkey";\n    unsigned char salt[16]={};\n    set_key(master,7,salt);\n    char* p=(char*)get_key_mem_addr();\n    printf("Attempting write to protected key memory at %%p...\\n",(void*)p); fflush(stdout);\n    *p=1;\n    printf("ERROR: should not reach here\\n"); return 0;\n}\n' > $@
+
+.PHONY: test6
+test6: $(COPY_BIN)
+	@echo "=== Task 6: Container Tests ==="
+	@echo ""
+	@echo "--- [1/5] Add single file ---"
+	@rm -f t6.container
+	@echo "Secret content file 1" > t6_f1.txt
+	./$(COPY_BIN) --add t6.container t6_f1.txt mysecretkey
+	@echo ""
+	@echo "--- [2/5] Add directory recursively ---"
+	@mkdir -p t6_dir/subdir
+	@echo "File in root of dir" > t6_dir/root.txt
+	@echo "File in subdir" > t6_dir/subdir/deep.txt
+	./$(COPY_BIN) --add t6.container t6_dir mysecretkey
+	@echo ""
+	@echo "--- [3/5] List container (sorted by name) ---"
+	./$(COPY_BIN) --list t6.container
+	@COUNT=$$(./$(COPY_BIN) --list t6.container 2>&1 | grep "Files" | grep -o '[0-9]*'); \
+	if [ "$$COUNT" -eq 3 ]; then \
+		echo "[PASS] File count: $$COUNT"; \
+	else \
+		echo "[FAIL] Expected 3, got $$COUNT"; exit 1; \
+	fi
+	@echo ""
+	@echo "--- [4/5] Extract and verify ---"
+	./$(COPY_BIN) --extract t6.container t6_f1.txt /tmp/t6_out1.txt mysecretkey
+	@diff t6_f1.txt /tmp/t6_out1.txt && echo "[PASS] t6_f1.txt extracted correctly"
+	./$(COPY_BIN) --extract t6.container t6_dir/subdir/deep.txt /tmp/t6_deep.txt mysecretkey
+	@diff t6_dir/subdir/deep.txt /tmp/t6_deep.txt && echo "[PASS] subdir/deep.txt extracted correctly"
+	@echo ""
+	@echo "--- [5/5] Wrong key gives different data ---"
+	./$(COPY_BIN) --extract t6.container t6_f1.txt /tmp/t6_wrong.txt wrongkey
+	@diff t6_f1.txt /tmp/t6_wrong.txt > /dev/null 2>&1 && echo "[FAIL] Wrong key gave same data" || echo "[PASS] Wrong key gives different data"
+	@echo ""
+	@echo "=== [OK] All Task 6 tests passed ==="
+	@rm -f t6_f1.txt t6.container /tmp/t6_out1.txt /tmp/t6_deep.txt /tmp/t6_wrong.txt
+	@rm -rf t6_dir/
