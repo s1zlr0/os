@@ -48,8 +48,10 @@
 #endif
 
 // Типы указателей на функции библиотеки
-typedef void (*set_key_fn)(const unsigned char*, int, const unsigned char*);
-typedef void (*cipher_fn)(void*, void*, int);
+typedef void* (*rc4_alloc_fn)(void);
+typedef void  (*rc4_free_fn)(void*);
+typedef void  (*rc4_init_fn)(void*, const unsigned char*, int, const unsigned char*);
+typedef void  (*rc4_cipher_fn)(void*, void*, void*, int);
 
 // Читает файл целиком в вектор байт
 static bool read_file(const std::string& path, std::vector<unsigned char>& data) {
@@ -171,16 +173,12 @@ int main(int argc, char* argv[]) {
     }
     std::cout << "[INFO] Библиотека загружена успешно.\n";
 
-    set_key_fn fn_set_key = reinterpret_cast<set_key_fn>(lib_sym(handle, "set_key"));
-    if (!fn_set_key) {
-        std::cerr << "[ERROR] Не найдена функция set_key: " << lib_error() << "\n";
-        lib_close(handle);
-        return EXIT_FAILURE;
-    }
-
-    cipher_fn fn_cipher = reinterpret_cast<cipher_fn>(lib_sym(handle, "cipher"));
-    if (!fn_cipher) {
-        std::cerr << "[ERROR] Не найдена функция cipher: " << lib_error() << "\n";
+    rc4_alloc_fn  fn_alloc  = reinterpret_cast<rc4_alloc_fn> (lib_sym(handle, "rc4_alloc"));
+    rc4_free_fn   fn_free   = reinterpret_cast<rc4_free_fn>  (lib_sym(handle, "rc4_free"));
+    rc4_init_fn   fn_init   = reinterpret_cast<rc4_init_fn>  (lib_sym(handle, "rc4_init"));
+    rc4_cipher_fn fn_cipher = reinterpret_cast<rc4_cipher_fn>(lib_sym(handle, "rc4_cipher"));
+    if (!fn_alloc || !fn_free || !fn_init || !fn_cipher) {
+        std::cerr << "[ERROR] Не найдены функции RC4: " << lib_error() << "\n";
         lib_close(handle);
         return EXIT_FAILURE;
     }
@@ -215,9 +213,12 @@ int main(int argc, char* argv[]) {
 
     // ── Шифрование / дешифрование (in-place)
     unsigned char zero_salt[16] = {};
-    fn_set_key(reinterpret_cast<const unsigned char*>(key_arg.c_str()),
-               static_cast<int>(key_arg.size()), zero_salt);
-    fn_cipher(data.data(), data.data(), static_cast<int>(data.size()));
+    void* state = fn_alloc();
+    fn_init(state,
+            reinterpret_cast<const unsigned char*>(key_arg.c_str()),
+            static_cast<int>(key_arg.size()), zero_salt);
+    fn_cipher(state, data.data(), data.data(), static_cast<int>(data.size()));
+    fn_free(state);
 
     // Показываем содержимое выходного файла (всегда бинарно после шифрования,
     // но если ключ=0 или это дешифрование — может быть текстом)

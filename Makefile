@@ -102,17 +102,18 @@ test5: $(LIB_NAME) $(TEST_BIN) $(COPY_BIN) test5_segv
 		echo "[FAIL] Files differ!"; exit 1; \
 	fi
 	@echo ""
-	@echo "--- [2/4] secure_copy with protected key (sequential) ---"
+	@echo "--- [2/4] secure_copy container with protected key ---"
 	@echo "file_a" > t5_a.txt && echo "file_b" > t5_b.txt && echo "file_c" > t5_c.txt
-	./$(COPY_BIN) --mode=sequential t5_a.txt t5_b.txt t5_c.txt out5/ $(TEST_KEY)
-	./$(COPY_BIN) --mode=sequential out5/t5_a.txt out5/t5_b.txt out5/t5_c.txt out5_dec/ $(TEST_KEY)
-	@for f in t5_a.txt t5_b.txt t5_c.txt; do \
-		if diff -q $$f out5_dec/$$f > /dev/null 2>&1; then \
-			echo "[PASS] $$f"; \
-		else \
-			echo "[FAIL] $$f"; exit 1; \
-		fi; \
-	done
+	@rm -f t5.container
+	./$(COPY_BIN) --add t5.container t5_a.txt $(TEST_KEY)
+	./$(COPY_BIN) --add t5.container t5_b.txt $(TEST_KEY)
+	./$(COPY_BIN) --add t5.container t5_c.txt $(TEST_KEY)
+	./$(COPY_BIN) --extract t5.container t5_a.txt /tmp/t5_a_out.txt $(TEST_KEY)
+	./$(COPY_BIN) --extract t5.container t5_b.txt /tmp/t5_b_out.txt $(TEST_KEY)
+	./$(COPY_BIN) --extract t5.container t5_c.txt /tmp/t5_c_out.txt $(TEST_KEY)
+	@diff t5_a.txt /tmp/t5_a_out.txt > /dev/null 2>&1 && echo "[PASS] t5_a.txt" || { echo "[FAIL] t5_a.txt"; exit 1; }
+	@diff t5_b.txt /tmp/t5_b_out.txt > /dev/null 2>&1 && echo "[PASS] t5_b.txt" || { echo "[FAIL] t5_b.txt"; exit 1; }
+	@diff t5_c.txt /tmp/t5_c_out.txt > /dev/null 2>&1 && echo "[PASS] t5_c.txt" || { echo "[FAIL] t5_c.txt"; exit 1; }
 	@echo ""
 	@echo "--- [3/4] SIGSEGV on write to protected key memory ---"
 	./test5_segv; \
@@ -123,15 +124,15 @@ test5: $(LIB_NAME) $(TEST_BIN) $(COPY_BIN) test5_segv
 		echo "[FAIL] Expected exit 1, got $$CODE"; exit 1; \
 	fi
 	@echo ""
-	@echo "--- [4/4] key not exported from .so (cannot modify directly) ---"
-	@if nm -D $(LIB_NAME) | grep -q "g_key_mem"; then \
+	@echo "--- [4/4] RC4 state not globally exported from .so ---"
+	@if nm -D $(LIB_NAME) | grep -qE "^[0-9a-f]+ [A-Z] g_key_mem"; then \
 		echo "[FAIL] g_key_mem is exported!"; exit 1; \
 	else \
-		echo "[PASS] g_key_mem is not exported — key cannot be modified directly"; \
+		echo "[PASS] RC4 state not globally exported — each file gets its own state"; \
 	fi
 	@echo ""
 	@echo "=== [OK] All Task 5 tests passed ==="
-	@rm -f t5_a.txt t5_b.txt t5_c.txt
+	@rm -f t5_a.txt t5_b.txt t5_c.txt t5.container /tmp/t5_a_out.txt /tmp/t5_b_out.txt /tmp/t5_c_out.txt
 	@rm -rf out5/ out5_dec/
 
 test5_segv: test5_segv.cpp caesar.cpp caesar.h
@@ -139,7 +140,7 @@ test5_segv: test5_segv.cpp caesar.cpp caesar.h
 	@echo "[OK] test5_segv built."
 
 test5_segv.cpp:
-	@printf '#include "caesar.h"\n#include <cstdio>\nint main(){\n    unsigned char master[]="testkey";\n    unsigned char salt[16]={};\n    set_key(master,7,salt);\n    char* p=(char*)get_key_mem_addr();\n    printf("Attempting write to protected key memory at %%p...\\n",(void*)p); fflush(stdout);\n    *p=1;\n    printf("ERROR: should not reach here\\n"); return 0;\n}\n' > $@
+	@printf '#include "caesar.h"\n#include <cstdio>\nint main(){\n    unsigned char master[]="testkey";\n    unsigned char salt[16]={};\n    RC4State* st=rc4_alloc();\n    rc4_init(st,master,7,salt);\n    char* p=(char*)get_key_mem_addr(st);\n    printf("Attempting write to protected key memory at %%p...\\n",(void*)p); fflush(stdout);\n    *p=1;\n    printf("ERROR: should not reach here\\n"); return 0;\n}\n' > $@
 
 .PHONY: test6
 test6: $(COPY_BIN)
