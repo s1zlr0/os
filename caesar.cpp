@@ -1,9 +1,11 @@
 /**
  * caesar.cpp — RC4 поточный шифр с защищённым состоянием.
  *
- * Task 5: состояние RC4 хранится в защищённой mmap-памяти.
- * Task 6: каждый файл получает своё состояние RC4State.
- *         ключ = master || salt (соль 16 байт, уникальна для каждого файла).
+ * Task 5 → Task 6: развитие предыдущей работы.
+ * - Защита памяти через mmap/mprotect сохранена из Task 5
+ * - Алгоритм шифрования заменён с XOR на RC4 поточный шифр
+ * - Глобальный ключ заменён на объект RC4State (отдельный для каждого файла)
+ * - Ключ = master_key || salt, соль уникальна для каждого файла
  */
 
 #include "caesar.h"
@@ -115,14 +117,13 @@ extern "C" void rc4_init(RC4State* state,
     // Составляем ключ: master || salt
     unsigned char combined[256];
     int salt_len = 16;
-    int total = master_len + salt_len;
-    if (total > 256) total = 256;
 
     int copy_master = master_len < 256 ? master_len : 256;
     memcpy(combined, master, copy_master);
     int room = 256 - copy_master;
     int copy_salt = salt_len < room ? salt_len : room;
     memcpy(combined + copy_master, salt, copy_salt);
+    int total = copy_master + copy_salt;
 
     rc4_ksa(state, combined, total);
     memset(combined, 0, sizeof(combined));

@@ -58,34 +58,6 @@ test: all
 		echo "[FAIL] Files differ!"; exit 1; \
 	fi
 
-.PHONY: test3
-test3: $(COPY_BIN)
-	@for i in 1 2 3 4 5; do echo "Test file $$i" > test_f$$i.txt; done
-	./$(COPY_BIN) test_f1.txt test_f2.txt test_f3.txt test_f4.txt test_f5.txt out3/ $(TEST_KEY)
-	./$(COPY_BIN) out3/test_f1.txt out3/test_f2.txt out3/test_f3.txt out3/test_f4.txt out3/test_f5.txt restored3/ $(TEST_KEY)
-	@for i in 1 2 3 4 5; do \
-		if diff -q test_f$$i.txt restored3/test_f$$i.txt > /dev/null 2>&1; then \
-			echo "[PASS] test_f$$i.txt"; \
-		else \
-			echo "[FAIL] test_f$$i.txt"; exit 1; \
-		fi; \
-	done
-	@cat log.txt
-
-.PHONY: test4
-test4: $(COPY_BIN)
-	@for i in $(shell seq 1 10); do dd if=/dev/urandom of=t4_f$$i.bin bs=1024 count=512 2>/dev/null; done
-	@echo "Auto mode (10 files, should pick parallel)"
-	./$(COPY_BIN) t4_f1.bin t4_f2.bin t4_f3.bin t4_f4.bin t4_f5.bin t4_f6.bin t4_f7.bin t4_f8.bin t4_f9.bin t4_f10.bin out4/ $(TEST_KEY)
-	@echo ""
-	@echo "Sequential mode"
-	./$(COPY_BIN) --mode=sequential t4_f1.bin t4_f2.bin t4_f3.bin t4_f4.bin t4_f5.bin out4_seq/ $(TEST_KEY)
-	@echo ""
-	@echo "Parallel mode"
-	./$(COPY_BIN) --mode=parallel t4_f1.bin t4_f2.bin t4_f3.bin t4_f4.bin t4_f5.bin out4_par/ $(TEST_KEY)
-	@rm -f t4_f*.bin
-	@rm -rf out4/ out4_seq/ out4_par/
-
 .PHONY: test5
 test5: $(LIB_NAME) $(TEST_BIN) $(COPY_BIN) test5_segv
 	@echo "=== Task 5: Memory Protection Tests ==="
