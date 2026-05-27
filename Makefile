@@ -1,40 +1,30 @@
 CXX      := g++
 CXXFLAGS := -Wall -Wextra -pedantic -std=c++17 -fPIC
-
 LIB_SRC  := caesar.cpp
 LIB_OBJ  := caesar.o
 LIB_NAME := libcaesar.so
-
 TEST_SRC := os_pr1.cpp
 TEST_BIN := os_pr1
-
 COPY_SRC     := secure_copy.cpp
 COPY_BIN     := secure_copy
 WORKERS_COUNT := 4
-
 INPUT_FILE     := input.txt
 ENCRYPTED_FILE := encrypted.bin
 DECRYPTED_FILE := decrypted.txt
 TEST_KEY       := testkey
-
 .PHONY: all
 all: $(LIB_NAME) $(TEST_BIN) $(COPY_BIN)
-
 $(LIB_NAME): $(LIB_OBJ)
 	$(CXX) -shared -o $@ $^
 	@echo "[OK] $(LIB_NAME) built."
-
 $(LIB_OBJ): $(LIB_SRC) caesar.h
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
-
 $(TEST_BIN): $(TEST_SRC) caesar.h
 	$(CXX) $(CXXFLAGS) -o $@ $< -ldl
 	@echo "[OK] $(TEST_BIN) built."
-
 $(COPY_BIN): $(COPY_SRC) caesar.h $(LIB_NAME)
 	$(CXX) $(CXXFLAGS) -DWORKERS_COUNT=$(WORKERS_COUNT) -o $@ $< -L. -lcaesar -pthread -Wl,-rpath,.
 	@echo "[OK] $(COPY_BIN) built."
-
 .PHONY: clean
 clean:
 	rm -f $(LIB_OBJ) $(LIB_NAME) $(TEST_BIN) $(COPY_BIN) \
@@ -44,7 +34,6 @@ clean:
 	      test5_segv test5_segv.cpp
 	@rm -rf out3/ restored3/ out4/ out4_seq/ out4_par/ out5/ out5_dec/
 	@echo "[OK] Cleaned."
-
 .PHONY: test
 test: all
 	@if [ ! -f $(INPUT_FILE) ]; then \
@@ -57,7 +46,6 @@ test: all
 	else \
 		echo "[FAIL] Files differ!"; exit 1; \
 	fi
-
 .PHONY: test5
 test5: $(LIB_NAME) $(TEST_BIN) $(COPY_BIN) test5_segv
 	@echo "=== Task 5: Memory Protection Tests ==="
@@ -76,13 +64,13 @@ test5: $(LIB_NAME) $(TEST_BIN) $(COPY_BIN) test5_segv
 	@echo ""
 	@echo "--- [2/4] secure_copy container with protected key ---"
 	@echo "file_a" > t5_a.txt && echo "file_b" > t5_b.txt && echo "file_c" > t5_c.txt
-	@rm -f t5.container
-	./$(COPY_BIN) --add t5.container t5_a.txt $(TEST_KEY)
-	./$(COPY_BIN) --add t5.container t5_b.txt $(TEST_KEY)
-	./$(COPY_BIN) --add t5.container t5_c.txt $(TEST_KEY)
-	./$(COPY_BIN) --extract t5.container t5_a.txt /tmp/t5_a_out.txt $(TEST_KEY)
-	./$(COPY_BIN) --extract t5.container t5_b.txt /tmp/t5_b_out.txt $(TEST_KEY)
-	./$(COPY_BIN) --extract t5.container t5_c.txt /tmp/t5_c_out.txt $(TEST_KEY)
+	@rm -f t5.img
+	./$(COPY_BIN) -add -key $(TEST_KEY) -image t5.img t5_a.txt t5_b.txt t5_c.txt
+	
+	
+	./$(COPY_BIN) -get -key $(TEST_KEY) -image t5.img -out /tmp/t5_a_out.txt t5_a.txt
+	./$(COPY_BIN) -get -key $(TEST_KEY) -image t5.img -out /tmp/t5_b_out.txt t5_b.txt
+	./$(COPY_BIN) -get -key $(TEST_KEY) -image t5.img -out /tmp/t5_c_out.txt t5_c.txt
 	@diff t5_a.txt /tmp/t5_a_out.txt > /dev/null 2>&1 && echo "[PASS] t5_a.txt" || { echo "[FAIL] t5_a.txt"; exit 1; }
 	@diff t5_b.txt /tmp/t5_b_out.txt > /dev/null 2>&1 && echo "[PASS] t5_b.txt" || { echo "[FAIL] t5_b.txt"; exit 1; }
 	@diff t5_c.txt /tmp/t5_c_out.txt > /dev/null 2>&1 && echo "[PASS] t5_c.txt" || { echo "[FAIL] t5_c.txt"; exit 1; }
@@ -104,34 +92,31 @@ test5: $(LIB_NAME) $(TEST_BIN) $(COPY_BIN) test5_segv
 	fi
 	@echo ""
 	@echo "=== [OK] All Task 5 tests passed ==="
-	@rm -f t5_a.txt t5_b.txt t5_c.txt t5.container /tmp/t5_a_out.txt /tmp/t5_b_out.txt /tmp/t5_c_out.txt
+	@rm -f t5_a.txt t5_b.txt t5_c.txt t5.img /tmp/t5_a_out.txt /tmp/t5_b_out.txt /tmp/t5_c_out.txt
 	@rm -rf out5/ out5_dec/
-
 test5_segv: test5_segv.cpp caesar.cpp caesar.h
 	$(CXX) $(CXXFLAGS) -DTEST5_EXPOSE_KEY_ADDR -o $@ test5_segv.cpp caesar.cpp -ldl
 	@echo "[OK] test5_segv built."
-
 test5_segv.cpp:
 	@printf '#include "caesar.h"\n#include <cstdio>\nint main(){\n    unsigned char master[]="testkey";\n    unsigned char salt[16]={};\n    RC4State* st=rc4_alloc();\n    rc4_init(st,master,7,salt);\n    char* p=(char*)get_key_mem_addr(st);\n    printf("Attempting write to protected key memory at %%p...\\n",(void*)p); fflush(stdout);\n    *p=1;\n    printf("ERROR: should not reach here\\n"); return 0;\n}\n' > $@
-
 .PHONY: test6
 test6: $(COPY_BIN)
 	@echo "=== Task 6: Container Tests ==="
 	@echo ""
 	@echo "--- [1/5] Add single file ---"
-	@rm -f t6.container
+	@rm -f t6.img
 	@echo "Secret content file 1" > t6_f1.txt
-	./$(COPY_BIN) --add t6.container t6_f1.txt mysecretkey
+	./$(COPY_BIN) -add -key $(TEST_KEY) -image t6.img t6_f1.txt
 	@echo ""
 	@echo "--- [2/5] Add directory recursively ---"
 	@mkdir -p t6_dir/subdir
 	@echo "File in root of dir" > t6_dir/root.txt
 	@echo "File in subdir" > t6_dir/subdir/deep.txt
-	./$(COPY_BIN) --add t6.container t6_dir mysecretkey
+	./$(COPY_BIN) -add -key $(TEST_KEY) -image t6.img t6_dir
 	@echo ""
-	@echo "--- [3/5] List container (sorted by name) ---"
-	./$(COPY_BIN) --list t6.container
-	@COUNT=$$(./$(COPY_BIN) --list t6.container 2>&1 | grep "Files" | grep -o '[0-9]*'); \
+	@echo "--- [3/5] List image (sorted by name) ---"
+	./$(COPY_BIN) -list -image t6.img
+	@COUNT=$$(./$(COPY_BIN) -list -image t6.img 2>&1 | grep "Files" | grep -o '[0-9]*'); \
 	if [ "$$COUNT" -eq 3 ]; then \
 		echo "[PASS] File count: $$COUNT"; \
 	else \
@@ -139,15 +124,15 @@ test6: $(COPY_BIN)
 	fi
 	@echo ""
 	@echo "--- [4/5] Extract and verify ---"
-	./$(COPY_BIN) --extract t6.container t6_f1.txt /tmp/t6_out1.txt mysecretkey
+	./$(COPY_BIN) -get -key $(TEST_KEY) -image t6.img -out /tmp/t6_out1.txt t6_f1.txt
 	@diff t6_f1.txt /tmp/t6_out1.txt && echo "[PASS] t6_f1.txt extracted correctly"
-	./$(COPY_BIN) --extract t6.container t6_dir/subdir/deep.txt /tmp/t6_deep.txt mysecretkey
-	@diff t6_dir/subdir/deep.txt /tmp/t6_deep.txt && echo "[PASS] subdir/deep.txt extracted correctly"
+	./$(COPY_BIN) -get -key $(TEST_KEY) -image t6.img -out /tmp/t6_deep.txt t6_dir/subdir/deep.txt
+	@diff t6_dir/subdir/deep.txt /tmp/t6_deep.txt && echo "[PASS] t6_dir/subdir/deep.txt extracted correctly"
 	@echo ""
 	@echo "--- [5/5] Wrong key gives different data ---"
-	./$(COPY_BIN) --extract t6.container t6_f1.txt /tmp/t6_wrong.txt wrongkey
+	./$(COPY_BIN) -get -key wrongkey -image t6.img -out /tmp/t6_wrong.txt t6_f1.txt
 	@diff t6_f1.txt /tmp/t6_wrong.txt > /dev/null 2>&1 && echo "[FAIL] Wrong key gave same data" || echo "[PASS] Wrong key gives different data"
 	@echo ""
 	@echo "=== [OK] All Task 6 tests passed ==="
-	@rm -f t6_f1.txt t6.container /tmp/t6_out1.txt /tmp/t6_deep.txt /tmp/t6_wrong.txt
+	@rm -f t6_f1.txt t6.img /tmp/t6_out1.txt /tmp/t6_deep.txt /tmp/t6_wrong.txt
 	@rm -rf t6_dir/

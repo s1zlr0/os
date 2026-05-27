@@ -24,21 +24,19 @@ struct RC4State {
     unsigned char* mem; // указатель на mmap-память (RC4_STATE_SIZE байт)
 };
 
-// Удобный доступ к полям состояния
+// Удобный доступ к полям состояния (ссылки на начальный, 256 и 257 байты)
 static inline unsigned char* rc4_s(RC4State* st) { return st->mem; }
 static inline unsigned char& rc4_i(RC4State* st) { return st->mem[256]; }
 static inline unsigned char& rc4_j(RC4State* st) { return st->mem[257]; }
 
-// ── Обработчик SIGSEGV ──────────────────────────────────────────────────────
+// ── Обработчик сигнала
 
 static void sigsegv_handler(int sig, siginfo_t* info, void* ctx) {
-    (void)sig; (void)ctx;
-    // Не можем проверить конкретный адрес без глобального списка —
-    // выводим security error для любой PROT_READ страницы нашего размера
+    (void)sig; (void)ctx; //явное использование параметров, чтобы заглушить предупреждение компилятора
     void* fault_addr = info ? info->si_addr : nullptr;
     if (fault_addr != nullptr) {
         const char msg[] = "[SECURITY ERROR] Попытка записи в защищённую область памяти!\n";
-        write(2, msg, sizeof(msg) - 1);
+        write(2, msg, sizeof(msg) - 1); //прямой системный вызов записи в файловый дескриптор 2
         _exit(EXIT_FAILURE);
     }
     struct sigaction sa_dfl;
@@ -49,17 +47,17 @@ static void sigsegv_handler(int sig, siginfo_t* info, void* ctx) {
 }
 
 static void install_sigsegv_handler() {
-    static bool installed = false;
+    static bool installed = false; // Это защита от двойной установки — если rc4_alloc вызвать несколько раз, обработчик установится только один раз.
     if (installed) return;
     struct sigaction sa;
-    memset(&sa, 0, sizeof(sa));
+    memset(&sa, 0, sizeof(sa));// заполнение 0
     sa.sa_sigaction = sigsegv_handler;
     sa.sa_flags = SA_SIGINFO;
     sigaction(SIGSEGV, &sa, nullptr);
     installed = true;
 }
 
-// ── rc4_alloc / rc4_free ────────────────────────────────────────────────────
+// ── rc4_alloc / rc4_free
 
 extern "C" RC4State* rc4_alloc(void) {
     install_sigsegv_handler();

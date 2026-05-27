@@ -1,8 +1,11 @@
 /**
- * secure_copy.cpp — Task 4 + Task 6
+ * secure_copy.cpp — защищённый контейнер файлов.
  *
- * Task 4: шифрование файлов с параллельной обработкой (pthread).
- * Task 6: контейнер для зашифрованных файлов на RC4.
+ * Task 4 → Task 5 → Task 6: развитие предыдущих работ.
+ * - Многопоточная обработка файлов сохранена из Task 4
+ * - Защита памяти RC4State через mmap/mprotect из Task 5
+ * - Добавлен контейнер: --add, --list, --extract
+ * - Шифрование заменено с XOR на RC4, каждый файл имеет свою соль
  *
  * Формат блока в контейнере:
  *   [4 байта] размер данных файла
@@ -62,7 +65,7 @@ static void collect_files(const std::string& path,
         std::string rel = path;
         if (!base_dir.empty() && path.substr(0, base_dir.size()) == base_dir) {
             rel = path.substr(base_dir.size());
-            if (!rel.empty() && rel[0] == '/') rel = rel.substr(1);
+            while (!rel.empty() && rel[0] == '/') rel = rel.substr(1);
         }
         out.push_back({path, rel});
     } else if (S_ISDIR(st.st_mode)) {
@@ -164,25 +167,25 @@ static int cmd_container_add(const std::string& container,
     }
     close(fc);
 
+    // Убираем trailing slash из пути
+    std::string clean_path = path;
+    while (clean_path.size() > 1 && clean_path.back() == '/')
+        clean_path.pop_back();
+
     // Собираем список файлов
     std::vector<std::pair<std::string,std::string>> files;
     // base_dir = родительская директория пути
     struct stat st;
-    stat(path.c_str(), &st);
+    stat(clean_path.c_str(), &st);
     std::string base_dir;
     if (S_ISDIR(st.st_mode)) {
-        base_dir = path;
-        // убираем trailing slash
-        if (!base_dir.empty() && base_dir.back() == '/')
-            base_dir.pop_back();
-        // base_dir — родитель, чтобы имя директории входило в путь
-        size_t pos = base_dir.rfind('/');
-        base_dir = (pos == std::string::npos) ? "" : base_dir.substr(0, pos);
+        size_t pos = clean_path.rfind('/');
+        base_dir = (pos == std::string::npos) ? "" : clean_path.substr(0, pos);
     } else {
-        size_t pos = path.rfind('/');
-        base_dir = (pos == std::string::npos) ? "" : path.substr(0, pos);
+        size_t pos = clean_path.rfind('/');
+        base_dir = (pos == std::string::npos) ? "" : clean_path.substr(0, pos);
     }
-    collect_files(path, base_dir, files);
+    collect_files(clean_path, base_dir, files);
 
     if (files.empty()) {
         std::cerr << "[ERROR] No files found in: " << path << "\n";
@@ -330,33 +333,98 @@ static int cmd_container_extract(const std::string& container,
 }
 
 // ============================================================
+// Вспомогательный парсер аргументов
+// ============================================================
+
+static std::string get_arg(int argc, char* argv[], const std::string& flag) {
+    for (int i = 1; i < argc - 1; ++i)
+        if (argv[i] == flag) return argv[i + 1];
+    return "";
+}
+
+static bool has_flag(int argc, char* argv[], const std::string& flag) {
+    for (int i = 1; i < argc; ++i)
+        if (argv[i] == flag) return true;
+    return false;
+}
+
+// ============================================================
 // main
 // ============================================================
 
 int main(int argc, char* argv[]) {
-    if (argc >= 2) {
-        std::string cmd = argv[1];
-
-        if (cmd == "--list" && argc == 3)
-            return cmd_container_list(argv[2]);
-
-        if (cmd == "--add" && argc == 5) {
-            const unsigned char* master = (const unsigned char*)argv[4];
-            int master_len = (int)strlen(argv[4]);
-            return cmd_container_add(argv[2], argv[3], master, master_len);
-        }
-
-        if (cmd == "--extract" && argc == 6) {
-            const unsigned char* master = (const unsigned char*)argv[5];
-            int master_len = (int)strlen(argv[5]);
-            return cmd_container_extract(argv[2], argv[3], argv[4],
-                                         master, master_len);
-        }
+    if (argc < 2) {
+        std::cerr << "Usage:\n"
+                  << "  " << argv[0] << " -add  -key KEY -image IMAGE file1 [file2 ...] [dir/]\n"
+                  << "  " << argv[0] << " -list -image IMAGE\n"
+                  << "  " << argv[0] << " -get  -key KEY -image IMAGE -out RESULT FILE\n";
+        return EXIT_FAILURE;
     }
 
-    std::cerr << "Usage:\n"
-              << "  " << argv[0] << " --add     container path master_key\n"
-              << "  " << argv[0] << " --list    container\n"
-              << "  " << argv[0] << " --extract container file_name out_path master_key\n";
+    std::string cmd   = argv[1];
+    std::string image = get_arg(argc, argv, "-image");
+    std::string key   = get_arg(argc, argv, "-key");
+
+    if (image.empty()) {
+        std::cerr << "[ERROR] -image not specified\n";
+        return EXIT_FAILURE;
+    }
+
+    // -list -image disk.img
+    if (cmd == "-list")
+        return cmd_container_list(image);
+
+    // -add -key "secret" -image disk.img file1 file2 dir/
+    if (cmd == "-add") {
+        if (key.empty()) {
+            std::cerr << "[ERROR] -key not specified\n";
+            return EXIT_FAILURE;
+        }
+        const unsigned char* master = (const unsigned char*)key.c_str();
+        int master_len = (int)key.size();
+
+        // Собираем все пути после известных флагов
+        std::vector<std::string> paths;
+        bool skip_next = false;
+        for (int i = 2; i < argc; ++i) {
+            if (skip_next) { skip_next = false; continue; }
+            std::string a = argv[i];
+            if (a == "-key" || a == "-image") { skip_next = true; continue; }
+            paths.push_back(a);
+        }
+
+        if (paths.empty()) {
+            std::cerr << "[ERROR] No files or directories specified\n";
+            return EXIT_FAILURE;
+        }
+
+        int result = EXIT_SUCCESS;
+        for (const auto& p : paths) {
+            if (cmd_container_add(image, p, master, master_len) != EXIT_SUCCESS)
+                result = EXIT_FAILURE;
+        }
+        return result;
+    }
+
+    // -get -key "secret" -image disk.img -out result_file file_name
+    if (cmd == "-get") {
+        if (key.empty()) {
+            std::cerr << "[ERROR] -key not specified\n";
+            return EXIT_FAILURE;
+        }
+        std::string out_path  = get_arg(argc, argv, "-out");
+        if (out_path.empty()) {
+            std::cerr << "[ERROR] -out not specified\n";
+            return EXIT_FAILURE;
+        }
+        // file_name — последний аргумент
+        std::string file_name = argv[argc - 1];
+
+        const unsigned char* master = (const unsigned char*)key.c_str();
+        int master_len = (int)key.size();
+        return cmd_container_extract(image, file_name, out_path, master, master_len);
+    }
+
+    std::cerr << "[ERROR] Unknown command: " << cmd << "\n";
     return EXIT_FAILURE;
 }
