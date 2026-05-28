@@ -1,11 +1,6 @@
 /**
  * caesar.cpp — RC4 поточный шифр с защищённым состоянием.
- *
- * Task 5 → Task 6: развитие предыдущей работы.
- * - Защита памяти через mmap/mprotect сохранена из Task 5
- * - Алгоритм шифрования заменён с XOR на RC4 поточный шифр
- * - Глобальный ключ заменён на объект RC4State (отдельный для каждого файла)
- * - Ключ = master_key || salt, соль уникальна для каждого файла
+ * - Ключ = master_key + salt, соль уникальна для каждого файла
  */
 
 #include "caesar.h"
@@ -51,9 +46,9 @@ static void install_sigsegv_handler() {
     if (installed) return;
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));// заполнение 0
-    sa.sa_sigaction = sigsegv_handler;
-    sa.sa_flags = SA_SIGINFO;
-    sigaction(SIGSEGV, &sa, nullptr);
+    sa.sa_sigaction = sigsegv_handler; 
+    sa.sa_flags = SA_SIGINFO; // флаг для передачи расширенной инфр
+    sigaction(SIGSEGV, &sa, nullptr); // регистрация обработчика (номер сигнала, новый обработчик, куда сохр старый)
     installed = true;
 }
 
@@ -64,13 +59,13 @@ extern "C" RC4State* rc4_alloc(void) {
 
     void* ptr = mmap(nullptr, RC4_STATE_SIZE,
                      PROT_READ | PROT_WRITE,
-                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0); // выделение памяти
     if (ptr == MAP_FAILED) {
         std::cerr << "[ERROR] mmap failed\n";
         return nullptr;
     }
-    memset(ptr, 0, RC4_STATE_SIZE);
-    mprotect(ptr, RC4_STATE_SIZE, PROT_READ);
+    memset(ptr, 0, RC4_STATE_SIZE); // заполнение 0
+    mprotect(ptr, RC4_STATE_SIZE, PROT_READ); //только для чтения
 
     RC4State* state = new RC4State;
     state->mem = static_cast<unsigned char*>(ptr);
@@ -86,7 +81,7 @@ extern "C" void rc4_free(RC4State* state) {
     delete state;
 }
 
-// ── RC4 KSA ─────────────────────────────────────────────────────────────────
+// ── RC4 KSA
 
 static void rc4_ksa(RC4State* state, const unsigned char* key, int key_len) {
     mprotect(state->mem, RC4_STATE_SIZE, PROT_READ | PROT_WRITE);
@@ -97,7 +92,7 @@ static void rc4_ksa(RC4State* state, const unsigned char* key, int key_len) {
     unsigned char j = 0;
     for (int k = 0; k < 256; ++k) {
         j = j + S[k] + key[k % key_len];
-        unsigned char tmp = S[k]; S[k] = S[j]; S[j] = tmp;
+        unsigned char tmp = S[k]; S[k] = S[j]; S[j] = tmp; // Перемешивание S-box по ключу. j — второй индекс, накапливается. key[k % key_len] — берём байты ключа циклически (если ключ короче 256 байт — повторяем). Каждую итерацию меняем местами S[k] и S[j]. После 256 итераций S-box перемешан уникальным образом зависящим от ключа.
     }
     rc4_i(state) = 0;
     rc4_j(state) = 0;
@@ -105,7 +100,7 @@ static void rc4_ksa(RC4State* state, const unsigned char* key, int key_len) {
     mprotect(state->mem, RC4_STATE_SIZE, PROT_READ);
 }
 
-// ── Публичный интерфейс ─────────────────────────────────────────────────────
+// ── Публичный интерфейс
 
 extern "C" void rc4_init(RC4State* state,
                          const unsigned char* master, int master_len,
@@ -113,20 +108,20 @@ extern "C" void rc4_init(RC4State* state,
     if (!state) return;
 
     // Составляем ключ: master || salt
-    unsigned char combined[256];
+    unsigned char combined[256]; //временный буфер на стеке для объединённого ключа.
     int salt_len = 16;
 
     int copy_master = master_len < 256 ? master_len : 256;
-    memcpy(combined, master, copy_master);
+    memcpy(combined, master, copy_master);// Копируем мастер-ключ
     int room = 256 - copy_master;
     int copy_salt = salt_len < room ? salt_len : room;
-    memcpy(combined + copy_master, salt, copy_salt);
+    memcpy(combined + copy_master, salt, copy_salt);//копируем соль
     int total = copy_master + copy_salt;
 
     rc4_ksa(state, combined, total);
     memset(combined, 0, sizeof(combined));
 }
-
+// генерируем гамму
 extern "C" void rc4_cipher(RC4State* state, void* src, void* dst, int len) {
     if (!state || !src || !dst || len <= 0) return;
 

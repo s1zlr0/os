@@ -1,17 +1,11 @@
 /**
  * secure_copy.cpp — защищённый контейнер файлов.
  *
- * Task 4 → Task 5 → Task 6: развитие предыдущих работ.
- * - Многопоточная обработка файлов сохранена из Task 4
- * - Защита памяти RC4State через mmap/mprotect из Task 5
- * - Добавлен контейнер: --add, --list, --extract
- * - Шифрование заменено с XOR на RC4, каждый файл имеет свою соль
- *
  * Формат блока в контейнере:
  *   [4 байта] размер данных файла
  *   [4 байта] длина имени файла
  *   [16 байт] соль
- *   [N байт]  имя файла (без нуля)
+ *   [N байт]  имя файла
  *   [M байт]  зашифрованные данные файла
  */
 
@@ -33,9 +27,8 @@
 
 #include "caesar.h"
 
-// ============================================================
 // Task 6: контейнер файлов с RC4-шифрованием
-// ============================================================
+
 
 static const int SALT_SIZE = 16;
 static const int MAX_CONTAINER_THREADS = 5;
@@ -122,7 +115,7 @@ static void* add_file_thread(void* arg) {
     rc4_free(state);
 
     // Формируем заголовок блока
-    uint32_t name_len = (uint32_t)t->rel_name.size();
+    uint32_t name_len = (uint32_t)t->rel_name.size(); //Длина имени файла в байтах
 
     // Пишем в контейнер под мьютексом
     pthread_mutex_lock(t->fd_mutex);
@@ -199,7 +192,7 @@ static int cmd_container_add(const std::string& container,
     for (size_t i = 0; i < files.size(); ++i) {
         tasks[i] = {files[i].first, files[i].second,
                     container, master, master_len, &fd_mutex};
-    }
+    } //files[i].first — полный путь. files[i].second — имя в контейнере. &fd_mutex — все задачи получают адрес одного мьютекса
 
     size_t done = 0;
     while (done < tasks.size()) {
@@ -224,7 +217,7 @@ struct ContainerEntry {
     uint32_t    name_len;
     unsigned char salt[SALT_SIZE];
     std::string name;
-    off_t       data_offset; // смещение данных в контейнере
+    off_t       data_offset; // смещение данных в образе
 };
 
 // Читает все записи из контейнера
@@ -237,7 +230,7 @@ static bool read_entries(const std::string& container,
         return false;
     }
 
-    while (true) {
+    while (true) { // Бесконечный цикл — выходим когда read вернёт не то количество байт (конец файла или ошибка)
         ContainerEntry e;
         if (read(fd, &e.file_size, 4) != 4) break;
         if (read(fd, &e.name_len,  4) != 4) break;
@@ -289,7 +282,7 @@ static int cmd_container_extract(const std::string& container,
     if (!read_entries(container, entries)) return EXIT_FAILURE;
 
     const ContainerEntry* found = nullptr;
-    for (const auto& e : entries) {
+    for (const auto& e : entries) { //Линейный поиск. found — указатель на найденную запись. &e — адрес элемента вектора. break — выходим сразу как нашли
         if (e.name == name) { found = &e; break; }
     }
     if (!found) {
@@ -303,7 +296,7 @@ static int cmd_container_extract(const std::string& container,
         std::cerr << "[ERROR] Cannot open container: " << strerror(errno) << "\n";
         return EXIT_FAILURE;
     }
-    lseek(fd, found->data_offset, SEEK_SET);
+    lseek(fd, found->data_offset, SEEK_SET); //SEEK_SET — абсолютное смещение от начала файла. Прыгаем прямо к данным найденного файла
     std::vector<unsigned char> data(found->file_size);
     if (read(fd, data.data(), found->file_size) != (ssize_t)found->file_size) {
         std::cerr << "[ERROR] Read failed\n";
@@ -331,10 +324,7 @@ static int cmd_container_extract(const std::string& container,
               << " (" << found->file_size << " bytes)\n";
     return EXIT_SUCCESS;
 }
-
-// ============================================================
 // Вспомогательный парсер аргументов
-// ============================================================
 
 static std::string get_arg(int argc, char* argv[], const std::string& flag) {
     for (int i = 1; i < argc - 1; ++i)
@@ -348,11 +338,9 @@ static bool has_flag(int argc, char* argv[], const std::string& flag) {
     return false;
 }
 
-// ============================================================
 // main
-// ============================================================
 
-int main(int argc, char* argv[]) {
+int main(int argc, char* argv[]) { //argc — количество аргументов включая имя программы. argv[0] — имя программы
     if (argc < 2) {
         std::cerr << "Usage:\n"
                   << "  " << argv[0] << " -add  -key KEY -image IMAGE file1 [file2 ...] [dir/]\n"
@@ -380,7 +368,7 @@ int main(int argc, char* argv[]) {
             std::cerr << "[ERROR] -key not specified\n";
             return EXIT_FAILURE;
         }
-        const unsigned char* master = (const unsigned char*)key.c_str();
+        const unsigned char* master = (const unsigned char*)key.c_str(); //приведение к байтовому массиву
         int master_len = (int)key.size();
 
         // Собираем все пути после известных флагов
