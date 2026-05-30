@@ -106,5 +106,9 @@ test6: $(COPY_BIN)
 	@diff t6_f1.txt /tmp/t6_wrong.txt > /dev/null 2>&1 && echo "[FAIL] Wrong key gave same data" || echo "[PASS] Wrong key gives different data"
 	@echo ""
 	@echo "[OK] All Task 6 tests passed"
-	@rm -f t6_f1.txt t6.img /tmp/t6_out1.txt /tmp/t6_deep.txt /tmp/t6_wrong.txt
-	@rm -rf t6_dir/
+	@mkdir -p test_results
+	cp /tmp/t6_out1.txt test_results/t6_f1_decrypted.txt
+	cp /tmp/t6_deep.txt test_results/deep_decrypted.txt
+	./$(COPY_BIN) -list -image t6.img > test_results/list.txt
+
+
