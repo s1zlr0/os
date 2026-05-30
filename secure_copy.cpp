@@ -116,10 +116,17 @@ static void* add_file_thread(void* arg) {
 
     // Пишем заголовок блока
     off_t pos = t->write_offset;
-    pwrite(fout, &file_size, 4,                   pos); pos += 4;
-    pwrite(fout, &name_len,  4,                   pos); pos += 4;
-    pwrite(fout, salt, SALT_SIZE,                 pos); pos += SALT_SIZE;
-    pwrite(fout, t->rel_name.c_str(), name_len,   pos); pos += name_len;
+    bool ok = true;
+    if (pwrite(fout, &file_size, 4,                 pos) != 4)           ok = false; else pos += 4;
+    if (ok && pwrite(fout, &name_len, 4,            pos) != 4)           ok = false; else pos += 4;
+    if (ok && pwrite(fout, salt, SALT_SIZE,         pos) != SALT_SIZE)   ok = false; else pos += SALT_SIZE;
+    if (ok && pwrite(fout, t->rel_name.c_str(), name_len, pos) != (ssize_t)name_len) ok = false; else pos += name_len;
+
+    if (!ok) {
+        std::cerr << "[ERROR] Write failed (header): " << strerror(errno) << "\n";
+        rc4_free(state); close(fin); close(fout);
+        return nullptr;
+    }
 
     // Читаем, шифруем и пишем данные чанками — не держим весь файл в RAM
     static const size_t CHUNK = 4 * 1024 * 1024; // 4 МБ
@@ -133,7 +140,10 @@ static void* add_file_thread(void* arg) {
             break;
         }
         rc4_cipher(state, buf.data(), buf.data(), (int)r);
-        pwrite(fout, buf.data(), r, pos);
+        if (pwrite(fout, buf.data(), r, pos) != r) {
+            std::cerr << "[ERROR] Write failed (data): " << strerror(errno) << "\n";
+            break;
+        }
         pos += r;
         remaining -= r;
     }
@@ -216,7 +226,11 @@ static int cmd_container_add(const std::string& container,
         std::cerr << "[ERROR] Cannot open container for resize: " << strerror(errno) << "\n";
         return EXIT_FAILURE;
     }
-    ftruncate(fd_trunc, current_offset);
+    if (ftruncate(fd_trunc, current_offset) != 0) {
+        std::cerr << "[ERROR] ftruncate failed: " << strerror(errno) << "\n";
+        close(fd_trunc);
+        return EXIT_FAILURE;
+    }
     close(fd_trunc);
 
     // Запускаем потоки батчами по MAX_CONTAINER_THREADS
@@ -363,7 +377,9 @@ static std::string get_arg(int argc, char* argv[], const std::string& flag) {
     return "";
 }
 
+
 // main
+
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         std::cerr << "Usage:\n"
