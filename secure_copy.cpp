@@ -8,6 +8,22 @@
  *   [N байт]  имя файла (без нуля)
  *   [M байт]  зашифрованные данные файла
  */
+/**
+ * secure_copy.cpp — защищённый контейнер файлов.
+ *
+ * Task 4 → Task 5 → Task 6: развитие предыдущих работ.
+ * - Многопоточная обработка файлов сохранена из Task 4
+ * - Защита памяти RC4State через mmap/mprotect из Task 5
+ * - Добавлен контейнер: --add, --list, --extract
+ * - Шифрование заменено с XOR на RC4, каждый файл имеет свою соль
+ *
+ * Формат блока в контейнере:
+ *   [4 байта] размер данных файла
+ *   [4 байта] длина имени файла
+ *   [16 байт] соль
+ *   [N байт]  имя файла (без нуля)
+ *   [M байт]  зашифрованные данные файла
+ */
 
 #include <iostream>
 #include <vector>
@@ -28,6 +44,7 @@
 #include "caesar.h"
 
 // Task 6: контейнер файлов с RC4-шифрованием
+
 
 static const int SALT_SIZE = 16;
 static const int MAX_CONTAINER_THREADS = 5;
@@ -157,9 +174,9 @@ static void* add_file_thread(void* arg) {
     return nullptr;
 }
 
-// Добавить файлы/директорию в контейнер
+// Добавить файлы/директории в контейнер (все пути в одном вызове)
 static int cmd_container_add(const std::string& container,
-                             const std::string& path,
+                             const std::vector<std::string>& paths,
                              const unsigned char* master,
                              int master_len)
 {
@@ -171,39 +188,42 @@ static int cmd_container_add(const std::string& container,
     }
     close(fc);
 
-    // Убираем trailing slash из пути
-    std::string clean_path = path;
-    while (clean_path.size() > 1 && clean_path.back() == '/')
-        clean_path.pop_back();
-
-    // Собираем список файлов
+    // Собираем все файлы из всех путей в один список
     std::vector<std::pair<std::string,std::string>> files;
-    // base_dir = родительская директория пути
-    struct stat st;
-    stat(clean_path.c_str(), &st);
-    std::string base_dir;
-    if (S_ISDIR(st.st_mode)) {
+    for (const auto& path : paths) {
+        // Убираем trailing slash
+        std::string clean_path = path;
+        while (clean_path.size() > 1 && clean_path.back() == '/')
+            clean_path.pop_back();
+
+        struct stat st;
+        if (stat(clean_path.c_str(), &st) != 0) {
+            std::cerr << "[ERROR] Cannot stat: " << path << "\n";
+            continue;
+        }
+
+        // base_dir — родительская директория пути
         size_t pos = clean_path.rfind('/');
-        base_dir = (pos == std::string::npos) ? "" : clean_path.substr(0, pos);
-    } else {
-        size_t pos = clean_path.rfind('/');
-        base_dir = (pos == std::string::npos) ? "" : clean_path.substr(0, pos);
+        std::string base_dir = (pos == std::string::npos) ? "" : clean_path.substr(0, pos);
+
+        size_t before = files.size();
+        collect_files(clean_path, base_dir, files);
+        if (files.size() == before)
+            std::cerr << "[ERROR] No files found in: " << path << "\n";
     }
-    collect_files(clean_path, base_dir, files);
 
     if (files.empty()) {
-        std::cerr << "[ERROR] No files found in: " << path << "\n";
+        std::cerr << "[ERROR] No files to add\n";
         return EXIT_FAILURE;
     }
 
-    // Узнаём текущий размер образа — новые блоки пишем после существующих
+    // Узнаём текущий размер образа
     struct stat img_st;
     off_t base_offset = 0;
     if (stat(container.c_str(), &img_st) == 0)
         base_offset = img_st.st_size;
 
     // Вычисляем смещение для каждого файла заранее
-    // Размер блока = 4 + 4 + 16 + name_len + file_size
     std::vector<AddTask> tasks(files.size());
     off_t current_offset = base_offset;
     for (size_t i = 0; i < files.size(); ++i) {
@@ -220,7 +240,6 @@ static int cmd_container_add(const std::string& container,
     }
 
     // Расширяем файл образа до нужного размера заранее
-    // ftruncate заполняет новое место нулями
     int fd_trunc = open(container.c_str(), O_WRONLY);
     if (fd_trunc < 0) {
         std::cerr << "[ERROR] Cannot open container for resize: " << strerror(errno) << "\n";
@@ -234,7 +253,7 @@ static int cmd_container_add(const std::string& container,
     close(fd_trunc);
 
     // Запускаем потоки батчами по MAX_CONTAINER_THREADS
-    // Каждый поток пишет в своё смещение через pwrite — без мьютекса
+    // Все файлы из всех путей обрабатываются в одном пуле
     size_t done = 0;
     while (done < tasks.size()) {
         size_t batch = std::min((size_t)MAX_CONTAINER_THREADS,
@@ -377,7 +396,6 @@ static std::string get_arg(int argc, char* argv[], const std::string& flag) {
     return "";
 }
 
-
 // main
 
 int main(int argc, char* argv[]) {
@@ -426,12 +444,8 @@ int main(int argc, char* argv[]) {
             return EXIT_FAILURE;
         }
 
-        int result = EXIT_SUCCESS;
-        for (const auto& p : paths) {
-            if (cmd_container_add(image, p, master, master_len) != EXIT_SUCCESS)
-                result = EXIT_FAILURE;
-        }
-        return result;
+        // Передаём все пути сразу — один пул потоков для всех файлов
+        return cmd_container_add(image, paths, master, master_len);
     }
 
     // -get -key "secret" -image disk.img -out result_file file_name
